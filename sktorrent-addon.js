@@ -165,18 +165,27 @@ async function getTorrentInfo(url, sktUid, sktPass) {
     }
 }
 
-// Vytvoření addon builderu - POUZE stream functionality
+// Vytvoření addon builderu - minimální katalog + stream
 const builder = addonBuilder({
     id: "org.stremio.sktorrent.realdebrid",
     version: "3.0.0", 
     name: "SKTorrent RealDebrid",
     description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
     types: ["movie", "series"],
-    resources: ["stream"],
+    catalogs: [
+        { type: "movie", id: "empty", name: "Konfigurace" }
+    ], // Minimální katalog pro SDK
+    resources: ["catalog", "stream"], // Musíme mít oba
     idPrefixes: ["tt"]
 });
 
-// POUZE stream handler - žádné katalogy
+// Prázdný catalog handler (SDK požadavek)
+builder.defineCatalogHandler(async ({ type, id }) => {
+    console.log(`[DEBUG] 📚 Catalog požadavek: ${type}/${id}`);
+    return { metas: [] }; // Vracíme prázdno
+});
+
+// Stream handler - pouze Real-Debrid s přímými redirecty
 builder.defineStreamHandler(async (args) => {
     const { type, id } = args;
     console.log(`\n====== 🎮 STREAM Požadavek pro typ='${type}' id='${id}' ======`);
