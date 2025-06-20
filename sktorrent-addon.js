@@ -25,8 +25,7 @@ const builder = addonBuilder({
     name: "SKTorrent RealDebrid",
     description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
     types: ["movie", "series"],
-    catalogs: [], // Prázdné pole je povinné
-    resources: ["stream"],
+    resources: ["stream"], // Pouze stream, žádné katalogy
     idPrefixes: ["tt"]
 });
 
