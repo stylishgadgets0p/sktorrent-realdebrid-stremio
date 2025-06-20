@@ -188,26 +188,46 @@ builder.defineCatalogHandler(async ({ type, id }) => {
 // Stream handler - pouze Real-Debrid s přímými redirecty
 builder.defineStreamHandler(async (args) => {
     const { type, id } = args;
-    console.log(`\n====== 🎮 STREAM Požadavek pro typ='${type}' id='${id}' ======`);
+    console.log(`\n====== 🎮 STREAM Handler pro typ='${type}' id='${id}' ======`);
+    console.log(`🔍 Args:`, JSON.stringify(args, null, 2));
 
     const [imdbId, sRaw, eRaw] = id.split(":");
     const season = sRaw ? parseInt(sRaw) : undefined;
     const episode = eRaw ? parseInt(eRaw) : undefined;
 
-    // Pro základní manifest (bez userId), vracíme prázdné streamy
-    const userId = global.currentUserId; // Získáme z globální proměnné
+    // Zkusíme získat userId z různých zdrojů
+    let userId = global.currentUserId;
+    
+    console.log(`🆔 Detekovaný userId: ${userId}`);
+
+    // Pokud nemáme userId, zkusíme najít JAKÉHOKOLIV uživatele (pro test)
+    if (!userId && users.size > 0) {
+        userId = Array.from(users.keys())[0]; // Vezmi prvního uživatele
+        console.log(`🔄 Používám prvního dostupného uživatele: ${userId}`);
+    }
+
+    // Pokud stále nemáme userId nebo user data, vracíme prázdné streamy
     if (!userId || !users.has(userId)) {
-        console.log("❌ Uživatel nenalezen - vracím prázdný seznam");
+        console.log("❌ Žádný uživatel k dispozici - vracím prázdný seznam");
+        console.log(`📊 Celkem uživatelů v systému: ${users.size}`);
         return { streams: [] };
     }
 
     const userConfig = users.get(userId);
     const { sktUid, sktPass } = userConfig;
+    
+    console.log(`✅ Používám uživatele: ${userId}`);
+    console.log(`🔑 SKT údaje: uid=${sktUid}, pass=${sktPass ? 'SET' : 'MISSING'}`);
 
     const titles = await getTitleFromIMDb(imdbId);
-    if (!titles) return { streams: [] };
+    if (!titles) {
+        console.log("❌ Nepodařilo se získat název z IMDb");
+        return { streams: [] };
+    }
 
     const { title, originalTitle } = titles;
+    console.log(`🎬 Hledám: "${title}" / "${originalTitle}"`);
+    
     const queries = new Set();
     const baseTitles = [title, originalTitle].map(t => t.replace(/\(.*?\)/g, '').replace(/TV (Mini )?Series/gi, '').trim());
 
@@ -237,20 +257,29 @@ builder.defineStreamHandler(async (args) => {
         console.log(`[DEBUG] 🔍 Pokus ${attempt++}: Hledám '${q}'`);
         torrents = await searchTorrents(q, sktUid, sktPass);
         if (torrents.length > 0) break;
+        
+        // Limit attempts for debugging
+        if (attempt > 3) {
+            console.log(`⚠️ Omezuji pokusy na 3 pro debugging`);
+            break;
+        }
     }
 
     if (torrents.length === 0) {
-        console.log(`[INFO] ❌ Žádné torrenty nenalezeny`);
+        console.log(`[INFO] ❌ Žádné torrenty nenalezeny pro "${title}"`);
         return { streams: [] };
     }
 
     const streams = [];
-    console.log(`🎮 Generuji RealDebrid streamy...`);
+    console.log(`🎮 Generuji ${torrents.length} RealDebrid streamů...`);
 
-    // Zpracování pro Real-Debrid
-    for (const torrent of torrents.slice(0, 8)) {
+    // Zpracování pro Real-Debrid (omezíme na 3 pro rychlost)
+    for (const torrent of torrents.slice(0, 3)) {
         const torrentInfo = await getTorrentInfo(torrent.downloadUrl, sktUid, sktPass);
-        if (!torrentInfo) continue;
+        if (!torrentInfo) {
+            console.log(`⚠️ Nepodařilo se zpracovat torrent: ${torrent.name}`);
+            continue;
+        }
 
         let cleanedTitle = torrent.name.replace(/^Stiahni si\s*/i, "").trim();
         const categoryPrefix = torrent.category.trim().toLowerCase();
@@ -272,6 +301,8 @@ builder.defineStreamHandler(async (args) => {
                 countryWhitelist: ['CZ', 'SK']
             }
         });
+        
+        console.log(`✅ Přidán stream: ${cleanedTitle} (${quality})`);
     }
 
     console.log(`[INFO] ✅ Odesílám ${streams.length} RealDebrid streamů`);
@@ -321,10 +352,20 @@ app.use((req, res, next) => {
     
     if (manifestMatch || streamMatch) {
         const userId = manifestMatch ? manifestMatch[1] : streamMatch[1];
-        global.currentUserId = userId; // Nastavíme globálně pro stream handler
-        console.log(`🆔 Nastavuji userId: ${userId}`);
+        req.userId = userId; // Nastavíme do req objektu
+        global.currentUserId = userId; // Backup do globální proměnné
+        console.log(`🆔 Nastavuji userId: ${userId} pro ${req.url}`);
     }
     
+    next();
+});
+
+// Custom stream endpoint pro user-specific requesty  
+app.get('/stream/:type/:id', async (req, res) => {
+    console.log(`🎮 CUSTOM Stream request: ${req.params.type}/${req.params.id}`);
+    console.log(`🆔 Current userId:`, req.userId || global.currentUserId);
+    
+    // Předáme request na standardní addon router
     next();
 });
 
