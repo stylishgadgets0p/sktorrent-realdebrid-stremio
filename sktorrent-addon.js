@@ -174,9 +174,13 @@ const builder = addonBuilder({
     types: ["movie", "series"],
     catalogs: [
         { type: "movie", id: "empty", name: "Konfigurace" }
-    ], // Minimální katalog pro SDK
-    resources: ["catalog", "stream"], // Musíme mít oba
-    idPrefixes: ["tt"]
+    ],
+    resources: ["catalog", "stream"],
+    idPrefixes: ["tt"], // IMDb IDs
+    behaviorHints: {
+        adult: false,
+        p2p: false
+    }
 });
 
 // Prázdný catalog handler (SDK požadavek)
@@ -334,7 +338,47 @@ app.use((req, res, next) => {
     next();
 });
 
-// Health check
+// Debug endpoint pro manifest test
+app.get('/debug', (req, res) => {
+    const manifest = builder.getInterface().manifest;
+    
+    res.json({
+        manifest: manifest,
+        users: users.size,
+        userList: Array.from(users.keys()),
+        cache: rdCache.size,
+        currentUserId: global.currentUserId,
+        uptime: process.uptime()
+    });
+});
+
+// Test stream endpoint pro debugging
+app.get('/test-stream/:type/:id', async (req, res) => {
+    const { type, id } = req.params;
+    
+    console.log(`🧪 TEST STREAM: ${type}/${id}`);
+    
+    // Simulace stream handleru
+    try {
+        const args = { type, id, extra: {} };
+        const result = await builder.getInterface().handlers.stream(args);
+        
+        res.json({
+            success: true,
+            args: args,
+            result: result,
+            currentUserId: global.currentUserId,
+            usersAvailable: users.size
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            args: { type, id },
+            currentUserId: global.currentUserId
+        });
+    }
+});
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
