@@ -839,12 +839,16 @@ app.get('/manifest.json', (req, res) => {
     res.setHeader('Expires', '0');
     
     console.log(`📋 Základní manifest požadavek z ${req.ip}`);
+    console.log(`📋 User-Agent: ${req.get('User-Agent')}`);
     
     res.json(manifest);
 });
 
 app.get('/manifest/:userId.json', (req, res) => {
     const { userId } = req.params;
+    
+    console.log(`📋 User manifest požadavek pro: ${userId} z ${req.ip}`);
+    console.log(`📋 User-Agent: ${req.get('User-Agent')}`);
     
     if (!users.has(userId)) {
         console.log(`❌ Manifest požadavek pro neexistujícího uživatele: ${userId}`);
@@ -853,14 +857,17 @@ app.get('/manifest/:userId.json', (req, res) => {
     
     const manifest = builder.getInterface().manifest;
     
+    // Přidáme debugging info do manifestu pro development
+    if (process.env.NODE_ENV !== 'production') {
+        manifest.description += ` [Debug: User ${userId.substring(0,8)}]`;
+    }
+    
     // Stremio kompatibilní headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    
-    console.log(`📋 User manifest požadavek pro: ${userId} z ${req.ip}`);
     
     res.json(manifest);
 });
