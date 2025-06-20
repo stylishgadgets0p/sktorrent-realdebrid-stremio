@@ -179,10 +179,10 @@ builder.defineStreamHandler(async (args) => {
     const season = sRaw ? parseInt(sRaw) : undefined;
     const episode = eRaw ? parseInt(eRaw) : undefined;
 
-    // Získat user ID z extra parametrů
+    // Pro testování, vracíme prázdné streamy pokud nemáme user data
     const userId = args.extra?.userId;
     if (!userId || !users.has(userId)) {
-        console.log("❌ Uživatel nenalezen nebo není přihlášen");
+        console.log("❌ Uživatel nenalezen nebo není přihlášen - vracím prázdný seznam");
         return { streams: [] };
     }
 
@@ -777,9 +777,27 @@ app.get('/manifest/:userId.json', (req, res) => {
         return res.status(404).json({ error: 'Uživatel nenalezen' });
     }
     
+    // Získat základní manifest
     const manifest = builder.getInterface();
-    // Přidat userId do manifest pro předání do stream handleru
-    manifest.userId = userId;
+    
+    // Přidat CORS headers
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Content-Type', 'application/json');
+    
+    console.log(`📋 Manifest požadavek pro uživatele: ${userId}`);
+    
+    res.json(manifest);
+});
+
+// Základní manifest bez user ID (pro testování)
+app.get('/manifest.json', (req, res) => {
+    const manifest = builder.getInterface();
+    
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Content-Type', 'application/json');
+    
+    console.log(`📋 Základní manifest požadavek`);
+    
     res.json(manifest);
 });
 
@@ -873,16 +891,8 @@ app.use((req, res, next) => {
     next();
 });
 
-// Převod addon na Express router s custom stream handler
+// Mount addon router PŘED custom endpointy
 const addonRouter = getRouter(builder.getInterface());
-
-// Custom stream handler override
-app.get('/stream/*', async (req, res, next) => {
-    // Nechat standardní stream handling projít
-    next();
-});
-
-// Mount addon router
 app.use('/', addonRouter);
 
 // Error handling middleware
