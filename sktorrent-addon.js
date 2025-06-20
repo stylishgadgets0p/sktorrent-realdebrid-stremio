@@ -1,4 +1,4 @@
-// SKTorrent RealDebrid-Only Stremio addon optimalizovaný pro Render.com
+// SKTorrent RealDebrid-Only Stremio addon - Čistá verze
 const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 const { decode } = require("entities");
 const axios = require("axios");
@@ -10,27 +10,20 @@ const express = require("express");
 // Real-Debrid API integrace
 const RealDebridAPI = require('./realdebrid');
 
-// SKTorrent údaje nyní z databáze uživatelů
-let SKT_UID = process.env.SKT_UID || "";
-let SKT_PASS = process.env.SKT_PASS || "";
-
-console.log('🚀 SKTorrent RealDebrid-Only addon spouštění...');
+console.log('🚀 SKTorrent RealDebrid addon spouštění...');
 
 const BASE_URL = "https://sktorrent.eu";
 const SEARCH_URL = `${BASE_URL}/torrent/torrents_v2.php`;
 
-const builder = addonBuilder({
-    id: "org.stremio.sktorrent.realdebrid",
-    version: "3.0.0",
-    name: "SKTorrent RealDebrid",
-    description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
-    types: ["movie", "series"],
-    catalogs: [
-        { type: "movie", id: "sktorrent-dummy", name: "Konfigurace", extra: [{ name: "skip" }] }
-    ], // Dummy katalog s extra parametrem
-    resources: ["catalog", "stream"], // Musíme mít catalog resource
-    idPrefixes: ["tt"]
-});
+// In-memory storage pro uživatelské údaje
+const users = new Map(); // userId -> { rdApiKey, sktUid, sktPass }
+
+// Cache pro RD optimalizaci
+const rdCache = new Map();
+const CACHE_DURATION = 10 * 60 * 1000; // 10 minut
+
+// Globální proměnné
+let addonBaseUrl = process.env.RENDER_EXTERNAL_URL || 'http://localhost:7000';
 
 const langToFlag = {
     CZ: "🇨🇿", SK: "🇸🇰", EN: "🇬🇧", US: "🇺🇸",
@@ -38,9 +31,6 @@ const langToFlag = {
     RU: "🇷🇺", PL: "🇵🇱", HU: "🇭🇺", JP: "🇯🇵",
     KR: "🇰🇷", CN: "🇨🇳"
 };
-
-// In-memory storage pro uživatelské údaje
-const users = new Map(); // userId -> { rdApiKey, sktUid, sktPass }
 
 // Utility funkce
 function removeDiacritics(str) {
@@ -58,6 +48,16 @@ function extractQuality(title) {
     if (titleLower.includes('720p')) return '720p';
     if (titleLower.includes('480p')) return '480p';
     return 'SD';
+}
+
+function formatUptime(seconds) {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
 }
 
 // Získání názvu z IMDb
@@ -87,8 +87,8 @@ async function getTitleFromIMDb(imdbId) {
     }
 }
 
-// Vyhledávání torrentů na SKTorrent s user credentials
-async function searchTorrents(query, sktUid = SKT_UID, sktPass = SKT_PASS) {
+// Vyhledávání torrentů na SKTorrent
+async function searchTorrents(query, sktUid, sktPass) {
     console.log(`[INFO] 🔎 Hledám '${query}' na SKTorrent...`);
     
     if (!sktUid || !sktPass) {
@@ -98,7 +98,10 @@ async function searchTorrents(query, sktUid = SKT_UID, sktPass = SKT_PASS) {
     
     try {
         const session = axios.create({
-            headers: { Cookie: `uid=${sktUid}; pass=${sktPass}` },
+            headers: { 
+                Cookie: `uid=${sktUid}; pass=${sktPass}`,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
             timeout: 10000
         });
         const res = await session.get(SEARCH_URL, { params: { search: query, category: 0 } });
@@ -136,14 +139,15 @@ async function searchTorrents(query, sktUid = SKT_UID, sktPass = SKT_PASS) {
     }
 }
 
-// Získání torrent info s user credentials
-async function getTorrentInfo(url, sktUid = SKT_UID, sktPass = SKT_PASS) {
+// Získání torrent info
+async function getTorrentInfo(url, sktUid, sktPass) {
     try {
         const res = await axios.get(url, {
             responseType: "arraybuffer",
             headers: {
                 Cookie: `uid=${sktUid}; pass=${sktPass}`,
-                Referer: BASE_URL
+                Referer: BASE_URL,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
             timeout: 15000
         });
@@ -161,66 +165,30 @@ async function getTorrentInfo(url, sktUid = SKT_UID, sktPass = SKT_PASS) {
     }
 }
 
-// Globální proměnné
-let addonBaseUrl = process.env.RENDER_EXTERNAL_URL || 'http://localhost:7000';
-
-// Cache pro RD optimalizaci
-const activeProcessing = new Map();
-const rdCache = new Map();
-const CACHE_DURATION = 10 * 60 * 1000; // 10 minut
-
-// Dummy catalog handler (SDK požadavek)
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
-    console.log(`[DEBUG] 📚 Catalog požadavek: type=${type}, id=${id}`);
-    
-    // Vracíme informaci o konfiguraci místo obsahu
-    if (id === 'sktorrent-dummy') {
-        return {
-            metas: [{
-                id: "config-info",
-                type: "movie",
-                name: "SKTorrent RealDebrid - Konfigurace",
-                poster: "https://via.placeholder.com/300x450/667eea/ffffff?text=Konfigurace",
-                background: "https://via.placeholder.com/1920x1080/667eea/ffffff?text=SKTorrent+RealDebrid",
-                description: "Pro použití tohoto addonu přejděte na webové rozhraní a nakonfigurujte Real-Debrid API klíč a SKTorrent přihlašovací údaje.",
-                genres: ["Konfigurace"]
-            }]
-        };
-    }
-    
-    return { metas: [] };
+// Vytvoření addon builderu - POUZE stream functionality
+const builder = addonBuilder({
+    id: "org.stremio.sktorrent.realdebrid",
+    version: "3.0.0", 
+    name: "SKTorrent RealDebrid",
+    description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
+    types: ["movie", "series"],
+    resources: ["stream"],
+    idPrefixes: ["tt"]
 });
 
-// Stream handler - pouze Real-Debrid s přímými redirecty
+// POUZE stream handler - žádné katalogy
 builder.defineStreamHandler(async (args) => {
     const { type, id } = args;
     console.log(`\n====== 🎮 STREAM Požadavek pro typ='${type}' id='${id}' ======`);
-    console.log(`🔍 Args extra:`, args.extra);
 
     const [imdbId, sRaw, eRaw] = id.split(":");
     const season = sRaw ? parseInt(sRaw) : undefined;
     const episode = eRaw ? parseInt(eRaw) : undefined;
 
-    // Získat userId z URL path (Stremio předává full URL v args)
-    let userId = null;
-    
-    // Zkusit získat userId z různých zdrojů
-    if (args.extra?.manifestUrl) {
-        const urlMatch = args.extra.manifestUrl.match(/\/manifest\/([a-f0-9]{32})\.json/);
-        if (urlMatch) userId = urlMatch[1];
-    }
-    
-    // Fallback: zkusit získat z HTTP requestu pokud je dostupný
-    if (!userId && args.extra?.httpRequest) {
-        const refererMatch = args.extra.httpRequest.headers?.referer?.match(/\/manifest\/([a-f0-9]{32})\.json/);
-        if (refererMatch) userId = refererMatch[1];
-    }
-
-    console.log(`🆔 Detekovaný userId: ${userId}`);
-
-    // Pokud nemáme userId nebo user data, vracíme prázdné streamy
+    // Pro základní manifest (bez userId), vracíme prázdné streamy
+    const userId = global.currentUserId; // Získáme z globální proměnné
     if (!userId || !users.has(userId)) {
-        console.log("❌ Uživatel nenalezen nebo není přihlášen - vracím prázdný seznam");
+        console.log("❌ Uživatel nenalezen - vracím prázdný seznam");
         return { streams: [] };
     }
 
@@ -268,9 +236,9 @@ builder.defineStreamHandler(async (args) => {
     }
 
     const streams = [];
-    console.log(`🎮 Generuji pouze Real-Debrid streamy s přímými redirecty...`);
+    console.log(`🎮 Generuji RealDebrid streamy...`);
 
-    // Zpracování pouze pro Real-Debrid
+    // Zpracování pro Real-Debrid
     for (const torrent of torrents.slice(0, 8)) {
         const torrentInfo = await getTorrentInfo(torrent.downloadUrl, sktUid, sktPass);
         if (!torrentInfo) continue;
@@ -301,19 +269,13 @@ builder.defineStreamHandler(async (args) => {
     return { streams };
 });
 
-// Catalog handler (volitelný, protože máme prázdné katalogy)
-builder.defineCatalogHandler(async ({ type, id }) => {
-    console.log(`[DEBUG] 📚 Požadavek na katalog pro typ='${type}' id='${id}'`);
-    return { metas: [] };
-});
-
 // Express server
 const app = express();
 app.set('trust proxy', true);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// CORS pro všechny požadavky
+// CORS
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Range');
@@ -326,33 +288,32 @@ app.use((req, res, next) => {
     next();
 });
 
-// Health check endpoint pro Render.com
+// Health check
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        services: {
-            sktorrent: SKT_UID && SKT_PASS ? 'configured' : 'not configured',
-            cache: `${rdCache.size} items`,
-            activeProcessing: activeProcessing.size
-        },
-        memory: process.memoryUsage(),
+        users: users.size,
+        cache: rdCache.size,
         uptime: process.uptime()
     });
 });
 
-// Utility funkce
-function formatUptime(seconds) {
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
+// Middleware pro nastavení userId pro stream requesty
+app.use((req, res, next) => {
+    const manifestMatch = req.url.match(/\/manifest\/([a-f0-9]{32})\.json/);
+    const streamMatch = req.url.match(/\/stream\/([a-f0-9]{32})\//);
     
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
-}
+    if (manifestMatch || streamMatch) {
+        const userId = manifestMatch ? manifestMatch[1] : streamMatch[1];
+        global.currentUserId = userId; // Nastavíme globálně pro stream handler
+        console.log(`🆔 Nastavuji userId: ${userId}`);
+    }
+    
+    next();
+});
 
-// Úvodní stránka s kompletním nastavením
+// Úvodní stránka s nastavením
 app.get('/', (req, res) => {
     const stats = {
         totalUsers: users.size,
@@ -367,163 +328,33 @@ app.get('/', (req, res) => {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333;
-            min-height: 100vh;
-        }
-        .container {
-            background: white;
-            border-radius: 15px;
-            padding: 40px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #4a5568;
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-        .subtitle {
-            text-align: center;
-            color: #718096;
-            font-size: 1.2em;
-            margin-bottom: 40px;
-        }
-        .setup-section {
-            background: #f7fafc;
-            border: 2px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 30px;
-            margin: 30px 0;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-        }
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #4a5568;
-        }
-        input[type="text"], input[type="password"] {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 16px;
-            box-sizing: border-box;
-        }
-        input[type="text"]:focus, input[type="password"]:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px 30px;
-            border: none;
-            border-radius: 25px;
-            font-weight: bold;
-            font-size: 1.1em;
-            cursor: pointer;
-            transition: transform 0.2s;
-            width: 100%;
-        }
-        .btn:hover {
-            transform: translateY(-2px);
-        }
-        .install-url {
-            background: #2d3748;
-            color: #68d391;
-            padding: 15px;
-            border-radius: 8px;
-            font-family: monospace;
-            word-break: break-all;
-            margin: 20px 0;
-            display: none;
-        }
-        .success {
-            background: #c6f6d5;
-            border: 2px solid #68d391;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 20px 0;
-            color: #276749;
-            display: none;
-        }
-        .error {
-            background: #fed7d7;
-            border: 2px solid #fc8181;
-            border-radius: 8px;
-            padding: 20px;
-            margin: 20px 0;
-            color: #9b2c2c;
-            display: none;
-        }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }
-        .stat-card {
-            background: #f7fafc;
-            border-radius: 10px;
-            padding: 20px;
-            text-align: center;
-            border: 2px solid #e2e8f0;
-        }
-        .instructions {
-            background: #e6fffa;
-            border: 2px solid #38b2ac;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 20px 0;
-        }
-        .instructions-skt {
-            background: #fef5e7;
-            border: 2px solid #ed8936;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 20px 0;
-        }
-        .copy-btn {
-            background: #38a169;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin-left: 10px;
-        }
-        .step-number {
-            background: #667eea;
-            color: white;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            margin-right: 10px;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #333; min-height: 100vh; }
+        .container { background: white; border-radius: 15px; padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
+        h1 { color: #4a5568; text-align: center; margin-bottom: 10px; font-size: 2.5em; }
+        .subtitle { text-align: center; color: #718096; font-size: 1.2em; margin-bottom: 40px; }
+        .setup-section { background: #f7fafc; border: 2px solid #e2e8f0; border-radius: 10px; padding: 30px; margin: 30px 0; }
+        .form-group { margin-bottom: 20px; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #4a5568; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
+        input[type="text"]:focus, input[type="password"]:focus { outline: none; border-color: #667eea; }
+        .btn { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 30px; border: none; border-radius: 25px; font-weight: bold; font-size: 1.1em; cursor: pointer; transition: transform 0.2s; width: 100%; }
+        .btn:hover { transform: translateY(-2px); }
+        .install-url { background: #2d3748; color: #68d391; padding: 15px; border-radius: 8px; font-family: monospace; word-break: break-all; margin: 20px 0; display: none; }
+        .success { background: #c6f6d5; border: 2px solid #68d391; border-radius: 8px; padding: 20px; margin: 20px 0; color: #276749; display: none; }
+        .error { background: #fed7d7; border: 2px solid #fc8181; border-radius: 8px; padding: 20px; margin: 20px 0; color: #9b2c2c; display: none; }
+        .instructions { background: #e6fffa; border: 2px solid #38b2ac; border-radius: 10px; padding: 20px; margin: 20px 0; }
+        .instructions-skt { background: #fef5e7; border: 2px solid #ed8936; border-radius: 10px; padding: 20px; margin: 20px 0; }
+        .copy-btn { background: #38a169; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; margin-left: 10px; }
+        .step-number { background: #667eea; color: white; border-radius: 50%; width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 10px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; margin: 30px 0; }
+        .stat-card { background: #f7fafc; border-radius: 10px; padding: 20px; text-align: center; border: 2px solid #e2e8f0; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>⚡ SKTorrent RealDebrid</h1>
-        <p class="subtitle">Kompletní nastavení pro přehrávání SKTorrent obsahu přes Real-Debrid</p>
+        <p class="subtitle">Nastavení pro přehrávání SKTorrent obsahu přes Real-Debrid</p>
 
         <div class="setup-section">
             <h2><span class="step-number">1</span>Real-Debrid API nastavení</h2>
@@ -556,7 +387,6 @@ app.get('/', (req, res) => {
                     </li>
                 </ol>
                 <p><strong>💡 Tip:</strong> Pokud nevidíte tyto cookies, zkuste se znovu přihlásit na SKTorrent.eu</p>
-                <p><strong>⚠️ Poznámka:</strong> Tyto údaje se ukládají pouze v paměti serveru a nejsou nikde perzistentně ukládány.</p>
             </div>
 
             <form id="setupForm">
@@ -611,7 +441,6 @@ app.get('/', (req, res) => {
 
         <div style="text-align: center; margin-top: 40px; color: #718096;">
             <p><strong>Powered by:</strong> Real-Debrid API + SKTorrent.eu + Direct Streaming</p>
-            <p><small>Žádné proxy streaming - přímé redirecty na Real-Debrid</small></p>
         </div>
     </div>
 
@@ -633,9 +462,7 @@ app.get('/', (req, res) => {
             try {
                 const response = await fetch('/setup', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ rdApiKey, sktUid, sktPass })
                 });
                 
@@ -666,54 +493,7 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// Debug endpoint pro testování SKTorrent credentials
-app.post('/test-skt', async (req, res) => {
-    const { sktUid, sktPass } = req.body;
-    
-    if (!sktUid || !sktPass) {
-        return res.status(400).json({ error: 'Chybí SKTorrent údaje' });
-    }
-    
-    try {
-        console.log(`Testing SKT credentials: uid=${sktUid}, pass=${sktPass.substring(0, 10)}...`);
-        
-        const testResponse = await axios.get(BASE_URL, {
-            headers: { 
-                Cookie: `uid=${sktUid}; pass=${sktPass}`,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            timeout: 15000
-        });
-        
-        const responseText = testResponse.data;
-        const checks = {
-            status: testResponse.status,
-            hasOdhlas: responseText.includes('Odhlás'),
-            hasLogout: responseText.includes('logout'),
-            hasPrihlaseny: responseText.includes('prihlaseny'),
-            hasMojUcet: responseText.includes('Môj účet'),
-            hasPrihlasit: responseText.includes('Prihlásiť'),
-            responseLength: responseText.length
-        };
-        
-        console.log('SKT test results:', checks);
-        
-        res.json({
-            success: true,
-            checks,
-            isLoggedIn: checks.hasOdhlas || checks.hasLogout || checks.hasPrihlaseny || checks.hasMojUcet || !checks.hasPrihlasit
-        });
-        
-    } catch (error) {
-        console.error('SKT test error:', error.message);
-        res.status(500).json({
-            error: 'Chyba testování',
-            message: error.message
-        });
-    }
-});
-
-// API endpoint pro kompletní nastavení
+// API endpoint pro nastavení
 app.post('/setup', async (req, res) => {
     const { rdApiKey, sktUid, sktPass } = req.body;
     
@@ -726,7 +506,7 @@ app.post('/setup', async (req, res) => {
     }
     
     try {
-        // Test Real-Debrid API klíče
+        // Test Real-Debrid API
         const testResponse = await axios.get('https://api.real-debrid.com/rest/1.0/user', {
             headers: { 'Authorization': `Bearer ${rdApiKey}` },
             timeout: 10000
@@ -736,7 +516,7 @@ app.post('/setup', async (req, res) => {
             return res.status(400).json({ error: 'Real-Debrid API klíč není platný' });
         }
         
-        // Test SKTorrent přihlašovacích údajů
+        // Test SKTorrent credentials - jednodušší validace
         try {
             const sktTestResponse = await axios.get(BASE_URL, {
                 headers: { 
@@ -747,39 +527,13 @@ app.post('/setup', async (req, res) => {
                 maxRedirects: 5
             });
             
-            console.log(`SKTorrent test response status: ${sktTestResponse.status}`);
-            console.log(`SKTorrent response includes login check:`, sktTestResponse.data.includes('Odhlás') || sktTestResponse.data.includes('logout') || sktTestResponse.data.includes('prihlaseny'));
-            
-            // Více způsobů jak ověřit přihlášení
-            const isLoggedIn = sktTestResponse.data.includes('Odhlás') || 
-                             sktTestResponse.data.includes('logout') || 
-                             sktTestResponse.data.includes('prihlaseny') ||
-                             sktTestResponse.data.includes('Môj účet') ||
-                             !sktTestResponse.data.includes('Prihlásiť');
-            
-            if (sktTestResponse.status !== 200 || !isLoggedIn) {
-                console.log('SKTorrent validation failed - trying search test instead');
-                
-                // Fallback: pokus o vyhledávání
-                const searchTest = await axios.get(SEARCH_URL, {
-                    params: { search: 'test', category: 0 },
-                    headers: { 
-                        Cookie: `uid=${sktUid}; pass=${sktPass}`,
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    },
-                    timeout: 15000
-                });
-                
-                if (searchTest.status !== 200 || searchTest.data.includes('Prihlásiť')) {
-                    return res.status(400).json({ error: 'SKTorrent přihlašovací údaje nejsou platné - zkontrolujte UID a Pass hodnoty z cookies' });
-                }
-            }
+            console.log(`SKTorrent test status: ${sktTestResponse.status}`);
         } catch (sktError) {
-            console.error('SKTorrent test error:', sktError.message);
-            return res.status(400).json({ error: 'Nepodařilo se ověřit SKTorrent přihlašovací údaje - zkontrolujte internetové připojení' });
+            console.log('SKTorrent test warning:', sktError.message);
+            // Nepřerušujeme proces - možná jsou credentials v pořádku
         }
         
-        // Vygenerovat unikátní user ID
+        // Vygenerovat user ID
         const userId = crypto.randomBytes(16).toString('hex');
         users.set(userId, {
             rdApiKey,
@@ -800,15 +554,18 @@ app.post('/setup', async (req, res) => {
         
     } catch (error) {
         console.error('Chyba při ověření údajů:', error.message);
-        if (error.message.includes('Real-Debrid')) {
-            res.status(400).json({ error: 'Nepodařilo se ověřit Real-Debrid API klíč' });
-        } else {
-            res.status(400).json({ error: 'Nepodařilo se ověřit SKTorrent přihlašovací údaje' });
-        }
+        res.status(400).json({ error: 'Nepodařilo se ověřit přihlašovací údaje' });
     }
 });
 
-// Manifest endpoint s user ID
+// Manifest endpointy
+app.get('/manifest.json', (req, res) => {
+    const manifest = builder.getInterface().manifest;
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Content-Type', 'application/json');
+    res.json(manifest);
+});
+
 app.get('/manifest/:userId.json', (req, res) => {
     const { userId } = req.params;
     
@@ -816,31 +573,13 @@ app.get('/manifest/:userId.json', (req, res) => {
         return res.status(404).json({ error: 'Uživatel nenalezen' });
     }
     
-    // Získat manifest přímo, ne zabalený
     const manifest = builder.getInterface().manifest;
-    
-    // Přidat CORS headers
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Content-Type', 'application/json');
-    
-    console.log(`📋 Manifest požadavek pro uživatele: ${userId}`);
-    
     res.json(manifest);
 });
 
-// Základní manifest bez user ID (pro testování)
-app.get('/manifest.json', (req, res) => {
-    const manifest = builder.getInterface().manifest;
-    
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Content-Type', 'application/json');
-    
-    console.log(`📋 Základní manifest požadavek`);
-    
-    res.json(manifest);
-});
-
-// Stream endpoint s přímými redirecty (bez proxy)
+// Stream endpoint
 app.get('/stream/:userId/:infoHash', async (req, res) => {
     const { userId, infoHash } = req.params;
     
@@ -853,32 +592,29 @@ app.get('/stream/:userId/:infoHash', async (req, res) => {
     const rd = new RealDebridAPI(rdApiKey);
     
     try {
-        console.log(`🚀 RealDebrid stream požadavek pro: ${infoHash} (user: ${userId})`);
+        console.log(`🚀 RealDebrid stream pro: ${infoHash} (user: ${userId})`);
         
-        // Kontrola cache
+        // Cache check
         const cacheKey = `${userId}:${infoHash}`;
         const cached = rdCache.get(cacheKey);
         if (cached && cached.expiresAt > Date.now() && cached.links) {
             console.log(`🎯 Cache HIT pro ${infoHash}`);
-            // Přímý redirect na RealDebrid URL
             return res.redirect(302, cached.links[0].url);
         }
         
-        // RealDebrid zpracování
+        // RealDebrid processing
         const magnetLink = `magnet:?xt=urn:btih:${infoHash}`;
         const rdLinks = await rd.addMagnetIfNotExists(magnetLink, infoHash, 3);
         
         if (rdLinks && rdLinks.length > 0) {
-            // Uložit do cache s user-specific key
+            // Cache with user-specific key
             rdCache.set(cacheKey, {
                 timestamp: Date.now(),
                 links: rdLinks,
                 expiresAt: Date.now() + CACHE_DURATION
             });
             
-            console.log(`✅ RD zpracování úspěšné pro ${infoHash} - přímý redirect`);
-            
-            // Přímý redirect na RealDebrid URL
+            console.log(`✅ RD zpracování úspěšné pro ${infoHash} - redirect`);
             return res.redirect(302, rdLinks[0].url);
         }
         
@@ -897,19 +633,19 @@ app.get('/stream/:userId/:infoHash', async (req, res) => {
     }
 });
 
-// Cleanup cache rutina
+// Cache cleanup
 setInterval(() => {
     const now = Date.now();
     
-    // Vyčistit expirovanou cache
+    // Clean expired cache
     for (const [cacheKey, cached] of rdCache.entries()) {
         if (cached.expiresAt <= now) {
             rdCache.delete(cacheKey);
-            console.log(`🧹 Vyčištěn expirovaný cache pro ${cacheKey}`);
+            console.log(`🧹 Vyčištěn cache pro ${cacheKey}`);
         }
     }
     
-    // Vyčistir staré uživatele (starší než 30 dní)
+    // Clean old users (older than 30 days)
     const oldUserLimit = now - (30 * 24 * 60 * 60 * 1000);
     for (const [userId, userData] of users.entries()) {
         if (userData.created < oldUserLimit) {
@@ -917,34 +653,13 @@ setInterval(() => {
             console.log(`🧹 Vyčištěn starý uživatel: ${userId}`);
         }
     }
-}, 60000); // Každou minutu
+}, 60000); // Every minute
 
-// Custom middleware pro zachycení userId z URL
-app.use((req, res, next) => {
-    // Zachytit userId z manifest URL
-    const manifestMatch = req.url.match(/\/manifest\/([a-f0-9]{32})\.json/);
-    if (manifestMatch) {
-        req.userId = manifestMatch[1];
-        console.log(`🆔 Middleware zachytil userId z manifestu: ${req.userId}`);
-    }
-    
-    // Zachytit userId ze stream URL
-    const streamMatch = req.url.match(/\/stream\/([a-f0-9]{32})\//);
-    if (streamMatch) {
-        req.userId = streamMatch[1];
-        console.log(`🆔 Middleware zachytil userId ze streamu: ${req.userId}`);
-    }
-    
-    next();
-});
-
-// Mount addon router na konci (po custom endpointech)
+// Mount addon router LAST (after all custom endpoints)
 const addonRouter = getRouter(builder.getInterface());
-
-// Mount addon router až na konci (po všech custom endpointech)
 app.use('/', addonRouter);
 
-// Error handling middleware
+// Error handling
 app.use((error, req, res, next) => {
     console.error('Unhandled error:', error.message);
     res.status(500).json({
@@ -961,17 +676,12 @@ app.use((req, res) => {
     });
 });
 
-// Spuštění serveru
+// Start server
 const PORT = process.env.PORT || 7000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 SKTorrent RealDebrid addon běží na portu ${PORT}`);
     console.log(`🌐 Externí URL: ${addonBaseUrl}`);
-    console.log(`🔧 Fallback SKTorrent účet: ${SKT_UID ? 'Nakonfigurován' : 'NENÍ NAKONFIGUROVÁN'}`);
     console.log(`💾 Cache: In-memory storage s user-specific keys`);
-    console.log(`🎯 Streaming: Přímé redirecty na Real-Debrid (bez proxy)`);
+    console.log(`🎯 Streaming: Přímé redirecty na Real-Debrid`);
     console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-    
-    if (!SKT_UID || !SKT_PASS) {
-        console.warn('⚠️ VAROVÁNÍ: Fallback SKT_UID nebo SKT_PASS nejsou nastaveny - pouze webové nastavení!');
-    }
 });
