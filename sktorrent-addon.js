@@ -167,12 +167,6 @@ const activeProcessing = new Map();
 const rdCache = new Map();
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minut
 
-// Catalog handler (povinný i pro prázdné katalogy)
-builder.defineCatalogHandler(async ({ type, id }) => {
-    console.log(`[DEBUG] 📚 Požadavek na katalog pro typ='${type}' id='${id}'`);
-    return { metas: [] };
-});
-
 // Stream handler - pouze Real-Debrid s přímými redirecty
 builder.defineStreamHandler(async (args) => {
     const { type, id } = args;
@@ -901,7 +895,7 @@ setInterval(() => {
     }
 }, 60000); // Každou minutu
 
-// Custom middleware pro zachycení userId z URL a přidání do requestu
+// Custom middleware pro zachycení userId z URL
 app.use((req, res, next) => {
     // Zachytit userId z manifest URL
     const manifestMatch = req.url.match(/\/manifest\/([a-f0-9]{32})\.json/);
@@ -920,24 +914,11 @@ app.use((req, res, next) => {
     next();
 });
 
-// Mount addon router PŘED custom endpointy
+// Mount addon router na konci (po custom endpointech)
 const addonRouter = getRouter(builder.getInterface());
 
-// Přepsat addon router pro předání userId
-app.use((req, res, next) => {
-    // Pokud je to stream request a máme userId, přidat ho do query
-    if (req.url.includes('/stream/') && req.userId) {
-        req.query.userId = req.userId;
-    }
-    
-    // Pokud je to manifest request, pokračovat normálně
-    if (req.url.includes('/manifest/')) {
-        return next();
-    }
-    
-    // Pro ostatní requesty použít addon router
-    addonRouter(req, res, next);
-});
+// Mount addon router až na konci (po všech custom endpointech)
+app.use('/', addonRouter);
 
 // Error handling middleware
 app.use((error, req, res, next) => {
