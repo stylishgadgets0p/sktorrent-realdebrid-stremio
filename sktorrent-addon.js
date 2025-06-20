@@ -376,22 +376,56 @@ app.get('/test-stream/:type/:id', async (req, res) => {
     
     console.log(`🧪 TEST STREAM: ${type}/${id}`);
     
-    // Simulace stream handleru
+    // Nastavíme userId pro test
+    global.currentUserId = req.query.userId || global.currentUserId;
+    
+    // Simulace stream handleru přímo
     try {
         const args = { type, id, extra: {} };
-        const result = await builder.getInterface().handlers.stream(args);
+        
+        // Volání našeho stream handleru přímo
+        const [imdbId, sRaw, eRaw] = id.split(":");
+        
+        // Debug info
+        const debugInfo = {
+            args,
+            currentUserId: global.currentUserId,
+            usersAvailable: users.size,
+            userList: Array.from(users.keys()),
+            imdbId,
+            hasUserData: global.currentUserId && users.has(global.currentUserId)
+        };
+        
+        // Pokud máme uživatele, zkusíme získat název z IMDb
+        if (global.currentUserId && users.has(global.currentUserId)) {
+            const titles = await getTitleFromIMDb(imdbId);
+            debugInfo.imdbTitles = titles;
+            
+            if (titles) {
+                const userConfig = users.get(global.currentUserId);
+                const { sktUid, sktPass } = userConfig;
+                
+                // Zkusíme 1 search
+                const searchQuery = titles.title;
+                debugInfo.searchQuery = searchQuery;
+                
+                const torrents = await searchTorrents(searchQuery, sktUid, sktPass);
+                debugInfo.torrentsFound = torrents.length;
+                debugInfo.torrents = torrents.slice(0, 2); // Jen první 2 pro debug
+            }
+        }
         
         res.json({
             success: true,
-            args: args,
-            result: result,
-            currentUserId: global.currentUserId,
-            usersAvailable: users.size
+            debug: debugInfo
         });
+        
     } catch (error) {
+        console.error('Test stream error:', error);
         res.status(500).json({
             success: false,
             error: error.message,
+            stack: error.stack,
             args: { type, id },
             currentUserId: global.currentUserId
         });
