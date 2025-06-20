@@ -505,11 +505,18 @@ app.get('/', (req, res) => {
                 <h3>🔑 Jak získat SKTorrent údaje:</h3>
                 <ol>
                     <li>Přihlaste se na <a href="https://sktorrent.eu" target="_blank">SKTorrent.eu</a></li>
-                    <li>Otevřete Developer Tools (F12) → <strong>Network</strong> tab</li>
-                    <li>Načtěte libovolnou stránku na sktorrent.eu</li>
-                    <li>V Network tabu najděte request a podívejte se na <strong>cookies</strong></li>
-                    <li>Zkopírujte hodnoty <code>uid</code> a <code>pass</code></li>
+                    <li>Otevřete Developer Tools (F12)</li>
+                    <li>Přejděte na tab <strong>Application</strong> (nebo <strong>Storage</strong>)</li>
+                    <li>V levém menu rozbalte <strong>Cookies</strong></li>
+                    <li>Klikněte na <strong>https://sktorrent.eu</strong></li>
+                    <li>Najděte a zkopírujte hodnoty:
+                        <ul>
+                            <li><code>uid</code> - číselná hodnota (např. 123456)</li>
+                            <li><code>pass</code> - dlouhý hash (např. abc123def456...)</li>
+                        </ul>
+                    </li>
                 </ol>
+                <p><strong>💡 Tip:</strong> Pokud nevidíte tyto cookies, zkuste se znovu přihlásit na SKTorrent.eu</p>
                 <p><strong>⚠️ Poznámka:</strong> Tyto údaje se ukládají pouze v paměti serveru a nejsou nikde perzistentně ukládány.</p>
             </div>
 
@@ -620,6 +627,53 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
+// Debug endpoint pro testování SKTorrent credentials
+app.post('/test-skt', async (req, res) => {
+    const { sktUid, sktPass } = req.body;
+    
+    if (!sktUid || !sktPass) {
+        return res.status(400).json({ error: 'Chybí SKTorrent údaje' });
+    }
+    
+    try {
+        console.log(`Testing SKT credentials: uid=${sktUid}, pass=${sktPass.substring(0, 10)}...`);
+        
+        const testResponse = await axios.get(BASE_URL, {
+            headers: { 
+                Cookie: `uid=${sktUid}; pass=${sktPass}`,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout: 15000
+        });
+        
+        const responseText = testResponse.data;
+        const checks = {
+            status: testResponse.status,
+            hasOdhlas: responseText.includes('Odhlás'),
+            hasLogout: responseText.includes('logout'),
+            hasPrihlaseny: responseText.includes('prihlaseny'),
+            hasMojUcet: responseText.includes('Môj účet'),
+            hasPrihlasit: responseText.includes('Prihlásiť'),
+            responseLength: responseText.length
+        };
+        
+        console.log('SKT test results:', checks);
+        
+        res.json({
+            success: true,
+            checks,
+            isLoggedIn: checks.hasOdhlas || checks.hasLogout || checks.hasPrihlaseny || checks.hasMojUcet || !checks.hasPrihlasit
+        });
+        
+    } catch (error) {
+        console.error('SKT test error:', error.message);
+        res.status(500).json({
+            error: 'Chyba testování',
+            message: error.message
+        });
+    }
+});
+
 // API endpoint pro kompletní nastavení
 app.post('/setup', async (req, res) => {
     const { rdApiKey, sktUid, sktPass } = req.body;
@@ -644,13 +698,46 @@ app.post('/setup', async (req, res) => {
         }
         
         // Test SKTorrent přihlašovacích údajů
-        const sktTestResponse = await axios.get(BASE_URL, {
-            headers: { Cookie: `uid=${sktUid}; pass=${sktPass}` },
-            timeout: 10000
-        });
-        
-        if (sktTestResponse.status !== 200 || !sktTestResponse.data.includes('Odhlás')) {
-            return res.status(400).json({ error: 'SKTorrent přihlašovací údaje nejsou platné' });
+        try {
+            const sktTestResponse = await axios.get(BASE_URL, {
+                headers: { 
+                    Cookie: `uid=${sktUid}; pass=${sktPass}`,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 15000,
+                maxRedirects: 5
+            });
+            
+            console.log(`SKTorrent test response status: ${sktTestResponse.status}`);
+            console.log(`SKTorrent response includes login check:`, sktTestResponse.data.includes('Odhlás') || sktTestResponse.data.includes('logout') || sktTestResponse.data.includes('prihlaseny'));
+            
+            // Více způsobů jak ověřit přihlášení
+            const isLoggedIn = sktTestResponse.data.includes('Odhlás') || 
+                             sktTestResponse.data.includes('logout') || 
+                             sktTestResponse.data.includes('prihlaseny') ||
+                             sktTestResponse.data.includes('Môj účet') ||
+                             !sktTestResponse.data.includes('Prihlásiť');
+            
+            if (sktTestResponse.status !== 200 || !isLoggedIn) {
+                console.log('SKTorrent validation failed - trying search test instead');
+                
+                // Fallback: pokus o vyhledávání
+                const searchTest = await axios.get(SEARCH_URL, {
+                    params: { search: 'test', category: 0 },
+                    headers: { 
+                        Cookie: `uid=${sktUid}; pass=${sktPass}`,
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    },
+                    timeout: 15000
+                });
+                
+                if (searchTest.status !== 200 || searchTest.data.includes('Prihlásiť')) {
+                    return res.status(400).json({ error: 'SKTorrent přihlašovací údaje nejsou platné - zkontrolujte UID a Pass hodnoty z cookies' });
+                }
+            }
+        } catch (sktError) {
+            console.error('SKTorrent test error:', sktError.message);
+            return res.status(400).json({ error: 'Nepodařilo se ověřit SKTorrent přihlašovací údaje - zkontrolujte internetové připojení' });
         }
         
         // Vygenerovat unikátní user ID
