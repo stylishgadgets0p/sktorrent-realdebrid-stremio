@@ -25,7 +25,8 @@ const builder = addonBuilder({
     name: "SKTorrent RealDebrid",
     description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
     types: ["movie", "series"],
-    resources: ["stream"], // Pouze stream resource, žádné katalogy
+    catalogs: [], // Prázdné pole je povinné
+    resources: ["stream"],
     idPrefixes: ["tt"]
 });
 
@@ -166,17 +167,40 @@ const activeProcessing = new Map();
 const rdCache = new Map();
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minut
 
+// Catalog handler (povinný i pro prázdné katalogy)
+builder.defineCatalogHandler(async ({ type, id }) => {
+    console.log(`[DEBUG] 📚 Požadavek na katalog pro typ='${type}' id='${id}'`);
+    return { metas: [] };
+});
+
 // Stream handler - pouze Real-Debrid s přímými redirecty
 builder.defineStreamHandler(async (args) => {
     const { type, id } = args;
     console.log(`\n====== 🎮 STREAM Požadavek pro typ='${type}' id='${id}' ======`);
+    console.log(`🔍 Args extra:`, args.extra);
 
     const [imdbId, sRaw, eRaw] = id.split(":");
     const season = sRaw ? parseInt(sRaw) : undefined;
     const episode = eRaw ? parseInt(eRaw) : undefined;
 
-    // Pro testování, vracíme prázdné streamy pokud nemáme user data
-    const userId = args.extra?.userId;
+    // Získat userId z URL path (Stremio předává full URL v args)
+    let userId = null;
+    
+    // Zkusit získat userId z různých zdrojů
+    if (args.extra?.manifestUrl) {
+        const urlMatch = args.extra.manifestUrl.match(/\/manifest\/([a-f0-9]{32})\.json/);
+        if (urlMatch) userId = urlMatch[1];
+    }
+    
+    // Fallback: zkusit získat z HTTP requestu pokud je dostupný
+    if (!userId && args.extra?.httpRequest) {
+        const refererMatch = args.extra.httpRequest.headers?.referer?.match(/\/manifest\/([a-f0-9]{32})\.json/);
+        if (refererMatch) userId = refererMatch[1];
+    }
+
+    console.log(`🆔 Detekovaný userId: ${userId}`);
+
+    // Pokud nemáme userId nebo user data, vracíme prázdné streamy
     if (!userId || !users.has(userId)) {
         console.log("❌ Uživatel nenalezen nebo není přihlášen - vracím prázdný seznam");
         return { streams: [] };
@@ -877,12 +901,20 @@ setInterval(() => {
     }
 }, 60000); // Každou minutu
 
-// Custom middleware pro user ID přenos
+// Custom middleware pro zachycení userId z URL a přidání do requestu
 app.use((req, res, next) => {
-    // Pro stream requesty, získat user ID z URL
+    // Zachytit userId z manifest URL
+    const manifestMatch = req.url.match(/\/manifest\/([a-f0-9]{32})\.json/);
+    if (manifestMatch) {
+        req.userId = manifestMatch[1];
+        console.log(`🆔 Middleware zachytil userId z manifestu: ${req.userId}`);
+    }
+    
+    // Zachytit userId ze stream URL
     const streamMatch = req.url.match(/\/stream\/([a-f0-9]{32})\//);
     if (streamMatch) {
         req.userId = streamMatch[1];
+        console.log(`🆔 Middleware zachytil userId ze streamu: ${req.userId}`);
     }
     
     next();
@@ -890,7 +922,22 @@ app.use((req, res, next) => {
 
 // Mount addon router PŘED custom endpointy
 const addonRouter = getRouter(builder.getInterface());
-app.use('/', addonRouter);
+
+// Přepsat addon router pro předání userId
+app.use((req, res, next) => {
+    // Pokud je to stream request a máme userId, přidat ho do query
+    if (req.url.includes('/stream/') && req.userId) {
+        req.query.userId = req.userId;
+    }
+    
+    // Pokud je to manifest request, pokračovat normálně
+    if (req.url.includes('/manifest/')) {
+        return next();
+    }
+    
+    // Pro ostatní requesty použít addon router
+    addonRouter(req, res, next);
+});
 
 // Error handling middleware
 app.use((error, req, res, next) => {
