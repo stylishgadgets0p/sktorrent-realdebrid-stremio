@@ -203,11 +203,8 @@ const builder = addonBuilder({
     }
 });
 
-// Prázdný catalog handler (SDK požadavek)
-builder.defineCatalogHandler(async ({ type, id }) => {
-    console.log(`[DEBUG] 📚 Catalog požadavek: ${type}/${id}`);
-    return { metas: [] }; // Vracíme prázdno
-});
+// POUZE stream handler - žádné catalog handlery
+// (Odstranil catalog handler úplně)
 
 // Stream handler - pouze Real-Debrid s přímými redirecty
 builder.defineStreamHandler(async (args) => {
@@ -840,6 +837,7 @@ app.get('/manifest.json', (req, res) => {
     
     console.log(`📋 Základní manifest požadavek z ${req.ip}`);
     console.log(`📋 User-Agent: ${req.get('User-Agent')}`);
+    console.log(`📋 Manifest:`, JSON.stringify(manifest, null, 2));
     
     res.json(manifest);
 });
