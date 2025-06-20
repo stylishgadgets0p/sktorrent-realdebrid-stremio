@@ -777,8 +777,8 @@ app.get('/manifest/:userId.json', (req, res) => {
         return res.status(404).json({ error: 'Uživatel nenalezen' });
     }
     
-    // Získat základní manifest
-    const manifest = builder.getInterface();
+    // Získat manifest přímo, ne zabalený
+    const manifest = builder.getInterface().manifest;
     
     // Přidat CORS headers
     res.header('Access-Control-Allow-Origin', '*');
@@ -791,7 +791,7 @@ app.get('/manifest/:userId.json', (req, res) => {
 
 // Základní manifest bez user ID (pro testování)
 app.get('/manifest.json', (req, res) => {
-    const manifest = builder.getInterface();
+    const manifest = builder.getInterface().manifest;
     
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Content-Type', 'application/json');
