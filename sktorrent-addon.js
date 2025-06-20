@@ -60,7 +60,7 @@ function formatUptime(seconds) {
     return `${minutes}m`;
 }
 
-// Získání názvu z IMDb
+// Získání názvu z IMDb s preferencí EN/CZ
 async function getTitleFromIMDb(imdbId) {
     try {
         const res = await axios.get(`https://www.imdb.com/title/${imdbId}/`, {
@@ -68,19 +68,39 @@ async function getTitleFromIMDb(imdbId) {
             timeout: 5000
         });
         const $ = cheerio.load(res.data);
-        const titleRaw = $('title').text().split(' - ')[0].trim();
-        const title = decode(titleRaw);
+        
+        // Získáme originální název (většinou anglický)
         const ldJson = $('script[type="application/ld+json"]').html();
-        let originalTitle = title;
+        let originalTitle = null;
+        let title = null;
+        
         if (ldJson) {
             try {
                 const json = JSON.parse(ldJson);
-                if (json && json.name) originalTitle = decode(json.name.trim());
+                if (json && json.name) {
+                    originalTitle = decode(json.name.trim());
+                }
             } catch (e) {}
         }
-        console.log(`[DEBUG] 🌝 Lokalizovaný název: ${title}`);
-        console.log(`[DEBUG] 🇳️ Originální název: ${originalTitle}`);
-        return { title, originalTitle };
+        
+        // Fallback na title tag
+        if (!originalTitle) {
+            const titleRaw = $('title').text().split(' - ')[0].trim();
+            originalTitle = decode(titleRaw);
+        }
+        
+        // Vyčistíme názvy - odstraníme rok a extra info
+        const cleanTitle = originalTitle.replace(/\s*\(\d{4}\)/, '').replace(/\s*\(TV.*?\)/, '').trim();
+        
+        console.log(`[DEBUG] 🌍 Originální název: "${originalTitle}"`);
+        console.log(`[DEBUG] 🧹 Vyčištěný název: "${cleanTitle}"`);
+        
+        // Vracíme pouze anglický/originální název
+        return { 
+            title: cleanTitle,           // Vyčištěný anglický název
+            originalTitle: cleanTitle    // Stejný jako title pro konzistenci
+        };
+        
     } catch (err) {
         console.error("[ERROR] Chyba při získávání z IMDb:", err.message);
         return null;
@@ -256,30 +276,36 @@ builder.defineStreamHandler(async (args) => {
     }
 
     const { title, originalTitle } = titles;
-    console.log(`🎬 Hledám: "${title}" / "${originalTitle}"`);
+    console.log(`🎬 Hledám: "${title}" (vyčištěný anglický název)`);
     
     const queries = new Set();
-    const baseTitles = [title, originalTitle].map(t => t.replace(/\(.*?\)/g, '').replace(/TV (Mini )?Series/gi, '').trim());
+    
+    // Použijeme pouze vyčištěný anglický název
+    const baseTitle = title;
+    const noDia = removeDiacritics(baseTitle);
+    const short = shortenTitle(noDia);
 
-    baseTitles.forEach(base => {
-        const noDia = removeDiacritics(base);
-        const short = shortenTitle(noDia);
-
-        if (type === 'series' && season && episode) {
-            const epTag = ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
-            [base, noDia, short].forEach(b => {
-                queries.add(b + epTag);
-                queries.add((b + epTag).replace(/[\':]/g, ''));
-                queries.add((b + epTag).replace(/[\':]/g, '').replace(/\s+/g, '.'));
-            });
-        } else {
-            [base, noDia, short].forEach(b => {
-                queries.add(b);
-                queries.add(b.replace(/[\':]/g, ''));
-                queries.add(b.replace(/[\':]/g, '').replace(/\s+/g, '.'));
-            });
-        }
-    });
+    if (type === 'series' && season && episode) {
+        const epTag = ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+        [baseTitle, noDia, short].forEach(b => {
+            queries.add(b + epTag);
+            queries.add((b + epTag).replace(/[\':]/g, ''));
+            queries.add((b + epTag).replace(/[\':]/g, '').replace(/\s+/g, '.'));
+        });
+    } else {
+        [baseTitle, noDia, short].forEach(b => {
+            queries.add(b);
+            queries.add(b.replace(/[\':]/g, ''));
+            queries.add(b.replace(/[\':]/g, '').replace(/\s+/g, '.'));
+            
+            // Přidáme varianty bez "The"
+            if (b.startsWith('The ')) {
+                const withoutThe = b.substring(4);
+                queries.add(withoutThe);
+                queries.add(withoutThe.replace(/[\':]/g, ''));
+            }
+        });
+    }
 
     let torrents = [];
     let attempt = 1;
@@ -421,6 +447,7 @@ app.get('/test-stream/:type/:id', async (req, res) => {
                 const userConfig = users.get(testUserId);
                 const { sktUid, sktPass, rdApiKey } = userConfig;
                 
+                
                 debugInfo.userConfig = {
                     hasSktUid: !!sktUid,
                     hasSktPass: !!sktPass,
@@ -428,18 +455,79 @@ app.get('/test-stream/:type/:id', async (req, res) => {
                     sktUid: sktUid // Pro debug
                 };
                 
-                // Zkusíme 1 search
-                const searchQuery = titles.title;
-                debugInfo.searchQuery = searchQuery;
-                
-                console.log(`🔍 Testuji search pro: "${searchQuery}"`);
-                const torrents = await searchTorrents(searchQuery, sktUid, sktPass);
-                debugInfo.torrentsFound = torrents.length;
-                debugInfo.torrents = torrents.slice(0, 2); // Jen první 2 pro debug
-                
-                if (torrents.length > 0) {
-                    debugInfo.sampleTorrent = torrents[0];
+                // Test SKTorrent credentials nejdřív
+                try {
+                    console.log(`🧪 Testuji SKTorrent připojení pro UID: ${sktUid}`);
+                    const testResponse = await axios.get(`${BASE_URL}`, {
+                        headers: { 
+                            Cookie: `uid=${sktUid}; pass=${sktPass}`,
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        },
+                        timeout: 10000
+                    });
+                    
+                    debugInfo.sktTest = {
+                        status: testResponse.status,
+                        connected: testResponse.status === 200,
+                        responseLength: testResponse.data?.length || 0,
+                        hasLoginIndicator: testResponse.data?.includes('Odhlás') || testResponse.data?.includes('logout')
+                    };
+                    
+                } catch (sktError) {
+                    debugInfo.sktTest = {
+                        error: sktError.message,
+                        connected: false
+                    };
                 }
+                
+                // Zkusíme více search queries - pouze anglické názvy
+                const baseTitle = titles.title; // Už je vyčištěný anglický název
+                const searchQueries = [
+                    baseTitle,                           // "The Shawshank Redemption"
+                    baseTitle.replace(/^The /, ''),     // "Shawshank Redemption" 
+                    baseTitle.split(' ').slice(0, 2).join(' '), // První 2 slova
+                    baseTitle.split(' ')[0]              // První slovo
+                ].filter((q, i, arr) => arr.indexOf(q) === i); // Unique pouze
+                
+                debugInfo.searchQueries = searchQueries;
+                let totalTorrents = [];
+                
+                for (let i = 0; i < searchQueries.length; i++) {
+                    const query = searchQueries[i];
+                    console.log(`🔍 Testuji search ${i+1}: "${query}"`);
+                    
+                    try {
+                        const torrents = await searchTorrents(query, sktUid, sktPass);
+                        debugInfo[`search${i+1}`] = {
+                            query: query,
+                            found: torrents.length,
+                            samples: torrents.slice(0, 2).map(t => ({
+                                name: t.name?.substring(0, 100) + '...', // Zkrátíme pro debug
+                                seeds: t.seeds,
+                                size: t.size,
+                                category: t.category
+                            }))
+                        };
+                        
+                        if (torrents.length > 0) {
+                            totalTorrents = totalTorrents.concat(torrents.slice(0, 5)); // Max 5 z každého
+                        }
+                        
+                        // Pokračujeme se všemi queries pro kompletní debug
+                    } catch (error) {
+                        debugInfo[`search${i+1}`] = {
+                            query: query,
+                            error: error.message
+                        };
+                    }
+                }
+                
+                debugInfo.torrentsFound = totalTorrents.length;
+                debugInfo.totalTorrents = totalTorrents.slice(0, 3).map(t => ({
+                    name: t.name?.substring(0, 80) + '...',
+                    seeds: t.seeds,
+                    size: t.size
+                }));
             }
         }
         
