@@ -25,7 +25,10 @@ const builder = addonBuilder({
     name: "SKTorrent RealDebrid",
     description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
     types: ["movie", "series"],
-    resources: ["stream"], // Pouze stream, žádné katalogy
+    catalogs: [
+        { type: "movie", id: "sktorrent-dummy", name: "Konfigurace", extra: [{ name: "skip" }] }
+    ], // Dummy katalog s extra parametrem
+    resources: ["catalog", "stream"], // Musíme mít catalog resource
     idPrefixes: ["tt"]
 });
 
@@ -165,6 +168,28 @@ let addonBaseUrl = process.env.RENDER_EXTERNAL_URL || 'http://localhost:7000';
 const activeProcessing = new Map();
 const rdCache = new Map();
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minut
+
+// Dummy catalog handler (SDK požadavek)
+builder.defineCatalogHandler(async ({ type, id, extra }) => {
+    console.log(`[DEBUG] 📚 Catalog požadavek: type=${type}, id=${id}`);
+    
+    // Vracíme informaci o konfiguraci místo obsahu
+    if (id === 'sktorrent-dummy') {
+        return {
+            metas: [{
+                id: "config-info",
+                type: "movie",
+                name: "SKTorrent RealDebrid - Konfigurace",
+                poster: "https://via.placeholder.com/300x450/667eea/ffffff?text=Konfigurace",
+                background: "https://via.placeholder.com/1920x1080/667eea/ffffff?text=SKTorrent+RealDebrid",
+                description: "Pro použití tohoto addonu přejděte na webové rozhraní a nakonfigurujte Real-Debrid API klíč a SKTorrent přihlašovací údaje.",
+                genres: ["Konfigurace"]
+            }]
+        };
+    }
+    
+    return { metas: [] };
+});
 
 // Stream handler - pouze Real-Debrid s přímými redirecty
 builder.defineStreamHandler(async (args) => {
