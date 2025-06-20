@@ -203,17 +203,35 @@ builder.defineStreamHandler(async (args) => {
     let userId = global.currentUserId;
     
     console.log(`🆔 Detekovaný userId: ${userId}`);
+    console.log(`📊 Celkem uživatelů v systému: ${users.size}`);
 
-    // Pokud nemáme userId, zkusíme najít JAKÉHOKOLIV uživatele (pro test)
-    if (!userId && users.size > 0) {
-        userId = Array.from(users.keys())[0]; // Vezmi prvního uživatele
-        console.log(`🔄 Používám prvního dostupného uživatele: ${userId}`);
+    // FALLBACK pro testování - použijeme pevné SKT údaje pokud jsou v ENV
+    if ((!userId || !users.has(userId)) && users.size === 0) {
+        const fallbackSktUid = process.env.SKT_UID;
+        const fallbackSktPass = process.env.SKT_PASS;
+        const fallbackRdKey = process.env.RD_API_KEY;
+        
+        if (fallbackSktUid && fallbackSktPass && fallbackRdKey) {
+            console.log(`🔄 Používám fallback ENV credentials`);
+            
+            // Dočasně vytvoříme fallback uživatele
+            const fallbackUserId = 'fallback-user';
+            users.set(fallbackUserId, {
+                rdApiKey: fallbackRdKey,
+                sktUid: fallbackSktUid,
+                sktPass: fallbackSktPass,
+                created: Date.now()
+            });
+            userId = fallbackUserId;
+            
+            console.log(`✅ Fallback uživatel vytvořen: ${userId}`);
+        }
     }
 
     // Pokud stále nemáme userId nebo user data, vracíme prázdné streamy
     if (!userId || !users.has(userId)) {
         console.log("❌ Žádný uživatel k dispozici - vracím prázdný seznam");
-        console.log(`📊 Celkem uživatelů v systému: ${users.size}`);
+        console.log("💡 Hint: Použijte webové nastavení pro konfiguraci nebo nastavte ENV proměnné");
         return { streams: [] };
     }
 
