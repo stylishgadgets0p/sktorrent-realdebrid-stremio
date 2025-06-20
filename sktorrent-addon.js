@@ -202,6 +202,14 @@ builder.defineStreamHandler(async (args) => {
     // Zkusíme získat userId z různých zdrojů
     let userId = global.currentUserId;
     
+    // Pokud nemáme userId nebo user neexistuje, použijeme prvního dostupného
+    if (!userId || !users.has(userId)) {
+        if (users.size > 0) {
+            userId = Array.from(users.keys())[0]; // Vezmi prvního uživatele
+            console.log(`🔄 CurrentUserId nefunguje, používám prvního dostupného: ${userId}`);
+        }
+    }
+    
     console.log(`🆔 Detekovaný userId: ${userId}`);
     console.log(`📊 Celkem uživatelů v systému: ${users.size}`);
 
@@ -376,8 +384,15 @@ app.get('/test-stream/:type/:id', async (req, res) => {
     
     console.log(`🧪 TEST STREAM: ${type}/${id}`);
     
-    // Nastavíme userId pro test
-    global.currentUserId = req.query.userId || global.currentUserId;
+    // Použijeme prvního dostupného uživatele pokud currentUserId nefunguje
+    let testUserId = req.query.userId || global.currentUserId;
+    
+    if (!testUserId || !users.has(testUserId)) {
+        if (users.size > 0) {
+            testUserId = Array.from(users.keys())[0];
+            console.log(`🔄 Používám prvního dostupného uživatele: ${testUserId}`);
+        }
+    }
     
     // Simulace stream handleru přímo
     try {
@@ -389,29 +404,42 @@ app.get('/test-stream/:type/:id', async (req, res) => {
         // Debug info
         const debugInfo = {
             args,
-            currentUserId: global.currentUserId,
+            originalUserId: global.currentUserId,
+            testUserId: testUserId,
             usersAvailable: users.size,
             userList: Array.from(users.keys()),
             imdbId,
-            hasUserData: global.currentUserId && users.has(global.currentUserId)
+            hasUserData: testUserId && users.has(testUserId)
         };
         
         // Pokud máme uživatele, zkusíme získat název z IMDb
-        if (global.currentUserId && users.has(global.currentUserId)) {
+        if (testUserId && users.has(testUserId)) {
             const titles = await getTitleFromIMDb(imdbId);
             debugInfo.imdbTitles = titles;
             
             if (titles) {
-                const userConfig = users.get(global.currentUserId);
-                const { sktUid, sktPass } = userConfig;
+                const userConfig = users.get(testUserId);
+                const { sktUid, sktPass, rdApiKey } = userConfig;
+                
+                debugInfo.userConfig = {
+                    hasSktUid: !!sktUid,
+                    hasSktPass: !!sktPass,
+                    hasRdApiKey: !!rdApiKey,
+                    sktUid: sktUid // Pro debug
+                };
                 
                 // Zkusíme 1 search
                 const searchQuery = titles.title;
                 debugInfo.searchQuery = searchQuery;
                 
+                console.log(`🔍 Testuji search pro: "${searchQuery}"`);
                 const torrents = await searchTorrents(searchQuery, sktUid, sktPass);
                 debugInfo.torrentsFound = torrents.length;
                 debugInfo.torrents = torrents.slice(0, 2); // Jen první 2 pro debug
+                
+                if (torrents.length > 0) {
+                    debugInfo.sampleTorrent = torrents[0];
+                }
             }
         }
         
@@ -427,7 +455,8 @@ app.get('/test-stream/:type/:id', async (req, res) => {
             error: error.message,
             stack: error.stack,
             args: { type, id },
-            currentUserId: global.currentUserId
+            originalUserId: global.currentUserId,
+            usersAvailable: users.size
         });
     }
 });
