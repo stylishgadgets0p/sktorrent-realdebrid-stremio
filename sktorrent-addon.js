@@ -284,12 +284,18 @@ app.set('trust proxy', true);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// CORS
+// CORS - rozšířené pro Stremio kompatibilitu
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Range');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Range, Authorization, Cache-Control');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
     res.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+    res.header('Access-Control-Max-Age', '3600');
+    
+    // Stremio specifické headers
+    res.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.header('Pragma', 'no-cache');
+    res.header('Expires', '0');
     
     if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
@@ -567,11 +573,19 @@ app.post('/setup', async (req, res) => {
     }
 });
 
-// Manifest endpointy
+// Manifest endpointy s lepšími headers
 app.get('/manifest.json', (req, res) => {
     const manifest = builder.getInterface().manifest;
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Content-Type', 'application/json');
+    
+    // Stremio kompatibilní headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    console.log(`📋 Základní manifest požadavek z ${req.ip}`);
+    
     res.json(manifest);
 });
 
@@ -579,12 +593,21 @@ app.get('/manifest/:userId.json', (req, res) => {
     const { userId } = req.params;
     
     if (!users.has(userId)) {
-        return res.status(404).json({ error: 'Uživatel nenalezen' });
+        console.log(`❌ Manifest požadavek pro neexistujícího uživatele: ${userId}`);
+        return res.status(404).json({ error: 'Uživatel nenalezen - použijte webové nastavení pro konfiguraci' });
     }
     
     const manifest = builder.getInterface().manifest;
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Content-Type', 'application/json');
+    
+    // Stremio kompatibilní headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    console.log(`📋 User manifest požadavek pro: ${userId} z ${req.ip}`);
+    
     res.json(manifest);
 });
 
