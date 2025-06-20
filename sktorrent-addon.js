@@ -25,10 +25,7 @@ const builder = addonBuilder({
     name: "SKTorrent RealDebrid",
     description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
     types: ["movie", "series"],
-    catalogs: [
-        { type: "movie", id: "sktorrent-movie", name: "SKTorrent Filmy" },
-        { type: "series", id: "sktorrent-series", name: "SKTorrent Seriály" }
-    ],
+    catalogs: [], // Prázdné katalogy - addon funguje pouze jako stream provider
     resources: ["stream"],
     idPrefixes: ["tt"]
 });
@@ -263,7 +260,8 @@ builder.defineStreamHandler(async (args) => {
     return { streams };
 });
 
-builder.defineCatalogHandler(({ type, id }) => {
+// Catalog handler (volitelný, protože máme prázdné katalogy)
+builder.defineCatalogHandler(async ({ type, id }) => {
     console.log(`[DEBUG] 📚 Požadavek na katalog pro typ='${type}' id='${id}'`);
     return { metas: [] };
 });
