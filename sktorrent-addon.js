@@ -32,6 +32,322 @@ const langToFlag = {
     KR: "🇰🇷", CN: "🇨🇳"
 };
 
+// Vytvoření addon builderu HNED na začátku
+const builder = addonBuilder({
+    id: "org.stremio.sktorrent.realdebrid",
+    version: "3.0.1", 
+    name: "SKTorrent RealDebrid",
+    description: "SKTorrent.eu obsah přes Real-Debrid s webovým nastavením",
+    types: ["movie", "series"],
+    catalogs: [
+        { type: "movie", id: "dummy", name: "Dummy" }
+    ],
+    resources: ["catalog", "stream"],
+    idPrefixes: ["tt"],
+    behaviorHints: {
+        adult: false,
+        p2p: false
+    }
+});
+
+// OKAMŽITĚ definovat oba handlery
+builder.defineCatalogHandler(async ({ type, id }) => {
+    console.log(`[DEBUG] 📚 Dummy catalog požadavek: ${type}/${id}`);
+    return { metas: [] };
+});
+
+// Utility funkce musí být definovány před stream handlerem
+function removeDiacritics(str) {
+    return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function shortenTitle(title, wordCount = 3) {
+    return title.split(/\s+/).slice(0, wordCount).join(" ");
+}
+
+function extractQuality(title) {
+    const titleLower = title.toLowerCase();
+    if (titleLower.includes('2160p') || titleLower.includes('4k')) return '4K';
+    if (titleLower.includes('1080p')) return '1080p';
+    if (titleLower.includes('720p')) return '720p';
+    if (titleLower.includes('480p')) return '480p';
+    return 'SD';
+}
+
+function formatUptime(seconds) {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+}
+
+// Základní async funkce pro stream handler
+async function getTitleFromIMDb(imdbId) {
+    try {
+        const res = await axios.get(`https://www.imdb.com/title/${imdbId}/`, {
+            headers: { "User-Agent": "Mozilla/5.0" },
+            timeout: 5000
+        });
+        const $ = cheerio.load(res.data);
+        
+        const ldJson = $('script[type="application/ld+json"]').html();
+        let originalTitle = null;
+        
+        if (ldJson) {
+            try {
+                const json = JSON.parse(ldJson);
+                if (json && json.name) {
+                    originalTitle = decode(json.name.trim());
+                }
+            } catch (e) {}
+        }
+        
+        if (!originalTitle) {
+            const titleRaw = $('title').text().split(' - ')[0].trim();
+            originalTitle = decode(titleRaw);
+        }
+        
+        const cleanTitle = originalTitle.replace(/\s*\(\d{4}\)/, '').replace(/\s*\(TV.*?\)/, '').trim();
+        
+        console.log(`[DEBUG] 🌍 Originální název: "${originalTitle}"`);
+        console.log(`[DEBUG] 🧹 Vyčištěný název: "${cleanTitle}"`);
+        
+        return { 
+            title: cleanTitle,
+            originalTitle: cleanTitle
+        };
+        
+    } catch (err) {
+        console.error("[ERROR] Chyba při získávání z IMDb:", err.message);
+        return null;
+    }
+}
+
+async function searchTorrents(query, sktUid, sktPass) {
+    console.log(`[INFO] 🔎 Hledám '${query}' na SKTorrent...`);
+    
+    if (!sktUid || !sktPass) {
+        console.error("[ERROR] Chybí SKTorrent přihlašovací údaje");
+        return [];
+    }
+    
+    try {
+        const session = axios.create({
+            headers: { 
+                Cookie: `uid=${sktUid}; pass=${sktPass}`,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout: 10000
+        });
+        const res = await session.get(SEARCH_URL, { params: { search: query, category: 0 } });
+        const $ = cheerio.load(res.data);
+        const posters = $('a[href^="details.php"] img');
+        const results = [];
+
+        posters.each((i, img) => {
+            const parent = $(img).closest("a");
+            const outerTd = parent.closest("td");
+            const fullBlock = outerTd.text().replace(/\s+/g, ' ').trim();
+            const href = parent.attr("href") || "";
+            const tooltip = parent.attr("title") || "";
+            const torrentId = href.split("id=").pop();
+            const category = outerTd.find("b").first().text().trim();
+            const sizeMatch = fullBlock.match(/Velkost\s([^|]+)/i);
+            const seedMatch = fullBlock.match(/Odosielaju\s*:\s*(\d+)/i);
+            const size = sizeMatch ? sizeMatch[1].trim() : "?";
+            const seeds = seedMatch ? seedMatch[1] : "0";
+            if (!category.toLowerCase().includes("film") && !category.toLowerCase().includes("seri")) return;
+            results.push({
+                name: tooltip,
+                id: torrentId,
+                size,
+                seeds,
+                category,
+                downloadUrl: `${BASE_URL}/torrent/download.php?id=${torrentId}`
+            });
+        });
+        console.log(`[INFO] 📦 Nalezeno torrentů: ${results.length}`);
+        return results;
+    } catch (err) {
+        console.error("[ERROR] Vyhledávání selhalo:", err.message);
+        return [];
+    }
+}
+
+async function getTorrentInfo(url, sktUid, sktPass) {
+    try {
+        const res = await axios.get(url, {
+            responseType: "arraybuffer",
+            headers: {
+                Cookie: `uid=${sktUid}; pass=${sktPass}`,
+                Referer: BASE_URL,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout: 15000
+        });
+        const torrent = bencode.decode(res.data);
+        const info = bencode.encode(torrent.info);
+        const infoHash = crypto.createHash("sha1").update(info).digest("hex");
+
+        return {
+            infoHash,
+            name: torrent.info.name ? torrent.info.name.toString() : ''
+        };
+    } catch (err) {
+        console.error("[ERROR] Chyba při zpracování .torrent:", err.message);
+        return null;
+    }
+}
+
+// Stream handler - definován ihned po utility funkcích
+builder.defineStreamHandler(async (args) => {
+    const { type, id } = args;
+    console.log(`\n====== 🎮 STREAM Handler pro typ='${type}' id='${id}' ======`);
+
+    const [imdbId, sRaw, eRaw] = id.split(":");
+    const season = sRaw ? parseInt(sRaw) : undefined;
+    const episode = eRaw ? parseInt(eRaw) : undefined;
+
+    let userId = global.currentUserId;
+    
+    if (!userId || !users.has(userId)) {
+        if (users.size > 0) {
+            userId = Array.from(users.keys())[0];
+            console.log(`🔄 CurrentUserId nefunguje, používám prvního dostupného: ${userId}`);
+        }
+    }
+    
+    console.log(`🆔 Detekovaný userId: ${userId}`);
+    console.log(`📊 Celkem uživatelů v systému: ${users.size}`);
+
+    if ((!userId || !users.has(userId)) && users.size === 0) {
+        const fallbackSktUid = process.env.SKT_UID;
+        const fallbackSktPass = process.env.SKT_PASS;
+        const fallbackRdKey = process.env.RD_API_KEY;
+        
+        if (fallbackSktUid && fallbackSktPass && fallbackRdKey) {
+            console.log(`🔄 Používám fallback ENV credentials`);
+            
+            const fallbackUserId = 'fallback-user';
+            users.set(fallbackUserId, {
+                rdApiKey: fallbackRdKey,
+                sktUid: fallbackSktUid,
+                sktPass: fallbackSktPass,
+                created: Date.now()
+            });
+            userId = fallbackUserId;
+            
+            console.log(`✅ Fallback uživatel vytvořen: ${userId}`);
+        }
+    }
+
+    if (!userId || !users.has(userId)) {
+        console.log("❌ Žádný uživatel k dispozici - vracím prázdný seznam");
+        console.log("💡 Hint: Použijte webové nastavení pro konfiguraci nebo nastavte ENV proměnné");
+        return { streams: [] };
+    }
+
+    const userConfig = users.get(userId);
+    const { sktUid, sktPass } = userConfig;
+    
+    console.log(`✅ Používám uživatele: ${userId}`);
+    console.log(`🔑 SKT údaje: uid=${sktUid}, pass=${sktPass ? 'SET' : 'MISSING'}`);
+
+    const titles = await getTitleFromIMDb(imdbId);
+    if (!titles) {
+        console.log("❌ Nepodařilo se získat název z IMDb");
+        return { streams: [] };
+    }
+
+    const { title, originalTitle } = titles;
+    console.log(`🎬 Hledám: "${title}" (vyčištěný anglický název)`);
+    
+    const queries = new Set();
+    
+    const baseTitle = title;
+    const noDia = removeDiacritics(baseTitle);
+    const short = shortenTitle(noDia);
+
+    if (type === 'series' && season && episode) {
+        const epTag = ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+        [baseTitle, noDia, short].forEach(b => {
+            queries.add(b + epTag);
+            queries.add((b + epTag).replace(/[\':]/g, ''));
+            queries.add((b + epTag).replace(/[\':]/g, '').replace(/\s+/g, '.'));
+        });
+    } else {
+        [baseTitle, noDia, short].forEach(b => {
+            queries.add(b);
+            queries.add(b.replace(/[\':]/g, ''));
+            queries.add(b.replace(/[\':]/g, '').replace(/\s+/g, '.'));
+            
+            if (b.startsWith('The ')) {
+                const withoutThe = b.substring(4);
+                queries.add(withoutThe);
+                queries.add(withoutThe.replace(/[\':]/g, ''));
+            }
+        });
+    }
+
+    let torrents = [];
+    let attempt = 1;
+    for (const q of queries) {
+        console.log(`[DEBUG] 🔍 Pokus ${attempt++}: Hledám '${q}'`);
+        torrents = await searchTorrents(q, sktUid, sktPass);
+        if (torrents.length > 0) break;
+        
+        if (attempt > 3) {
+            console.log(`⚠️ Omezuji pokusy na 3 pro debugging`);
+            break;
+        }
+    }
+
+    if (torrents.length === 0) {
+        console.log(`[INFO] ❌ Žádné torrenty nenalezeny pro "${title}"`);
+        return { streams: [] };
+    }
+
+    const streams = [];
+    console.log(`🎮 Generuji ${torrents.length} RealDebrid streamů...`);
+
+    for (const torrent of torrents.slice(0, 3)) {
+        const torrentInfo = await getTorrentInfo(torrent.downloadUrl, sktUid, sktPass);
+        if (!torrentInfo) {
+            console.log(`⚠️ Nepodařilo se zpracovat torrent: ${torrent.name}`);
+            continue;
+        }
+
+        let cleanedTitle = torrent.name.replace(/^Stiahni si\s*/i, "").trim();
+        const categoryPrefix = torrent.category.trim().toLowerCase();
+        if (cleanedTitle.toLowerCase().startsWith(categoryPrefix)) {
+            cleanedTitle = cleanedTitle.slice(torrent.category.length).trim();
+        }
+
+        const quality = extractQuality(torrent.name);
+        const langMatches = torrent.name.match(/\b([A-Z]{2})\b/g) || [];
+        const flags = langMatches.map(code => langToFlag[code.toUpperCase()]).filter(Boolean);
+        const flagsText = flags.length ? ` ${flags.join("/")}` : "";
+
+        streams.push({
+            name: `⚡ RealDebrid ${quality}`,
+            title: `${cleanedTitle}\n👥 ${torrent.seeds} seeders | 📦 ${torrent.size}${flagsText}`,
+            url: `${addonBaseUrl}/stream/${userId}/${torrentInfo.infoHash}`,
+            behaviorHints: { 
+                bingeGroup: `rd-${quality}`,
+                countryWhitelist: ['CZ', 'SK']
+            }
+        });
+        
+        console.log(`✅ Přidán stream: ${cleanedTitle} (${quality})`);
+    }
+
+    console.log(`[INFO] ✅ Odesílám ${streams.length} RealDebrid streamů`);
+    return { streams };
+});
+
 // Utility funkce
 function removeDiacritics(str) {
     return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
