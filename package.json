@@ -1,52 +1,27 @@
 {
-  "name": "sktorrent-realdebrid-addon",
+  "name": "sktorrent-realdebrid-only-addon",
   "version": "3.0.0",
-  "description": "SKTorrent RealDebrid-only Stremio addon s webovým nastavením a přímými redirecty",
-  "main": "sktorrent-addon.js",
+  "description": "SKTorrent addon pouze s Real-Debrid podporou a webovou konfigurací",
+  "main": "sktorrent-rd-addon.js",
   "scripts": {
-    "start": "node sktorrent-addon.js",
-    "dev": "nodemon sktorrent-addon.js",
-    "test": "echo \"No tests specified\" && exit 0",
-    "lint": "echo \"No linting configured\" && exit 0"
+    "start": "node sktorrent-rd-addon.js",
+    "dev": "nodemon sktorrent-rd-addon.js"
   },
-  "keywords": [
-    "stremio",
-    "addon",
-    "real-debrid",
-    "sktorrent",
-    "render",
-    "streaming",
-    "torrents",
-    "czech",
-    "slovak"
-  ],
-  "author": "SKTorrent RealDebrid Addon",
+  "keywords": ["stremio", "addon", "real-debrid", "sktorrent"],
+  "author": "",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=8.0.0"
+    "node": ">=14.0.0"
   },
   "dependencies": {
-    "axios": "^1.6.8",
+    "axios": "^1.6.0",
     "bncode": "^0.5.3",
     "cheerio": "^1.0.0-rc.12",
     "entities": "^4.5.0",
-    "express": "^4.19.2",
+    "express": "^4.18.2",
     "stremio-addon-sdk": "^1.6.10"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/your-username/sktorrent-realdebrid-addon.git"
-  },
-  "bugs": {
-    "url": "https://github.com/your-username/sktorrent-realdebrid-addon/issues"
-  },
-  "homepage": "https://github.com/your-username/sktorrent-realdebrid-addon#readme",
-  "config": {
-    "port": 7000
-  },
-  "private": false
+    "nodemon": "^3.0.0"
+  }
 }

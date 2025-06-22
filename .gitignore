@@ -1,12 +1,48 @@
+# Node.js
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+*.log
+logs/
+
+# Configuration
+config.json
 .env
 .env.local
 .env.*.local
-*.log
-.DS_Store
-Thumbs.db
-.vscode/
+
+# IDE
 .idea/
+.vscode/
+*.sublime*
+.DS_Store
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Test files
+*.test.js
+*.spec.js
+
+# Build
+dist/
+build/
+
+# Cache
+.cache/
+*.cache
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+
+# Backup files
+*.bak
+*.backup
+*.old

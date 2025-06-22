@@ -1,8 +1,12 @@
 services:
   - type: web
-    name: sktorrent-realdebrid-addon
-    env: node
-    plan: free
+    name: sktorrent-rd-addon
+    runtime: node
+    repo: https://github.com/YOUR_USERNAME/sktorrent-rd-addon # Nahraďte YOUR_USERNAME
     buildCommand: npm install
     startCommand: npm start
-    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /manifest.json
+    autoDeploy: false # Změňte na true pro automatické nasazení při push do GitHub

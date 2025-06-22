@@ -17,11 +17,13 @@ class RealDebridAPI {
     try {
       console.log(`🔍 Kontroluji existující torrenty pro hash: ${infoHash}`);
 
+      // Získat seznam aktivních torrentů
       const response = await axios.get(
         `${this.baseURL}/torrents?filter=true&limit=100`,
         { headers: this.headers, timeout: 15000 }
       );
 
+      // Najít torrent podle hash
       const existingTorrent = response.data.find(torrent =>
         torrent.hash && torrent.hash.toLowerCase() === infoHash.toLowerCase()
       );
@@ -29,6 +31,7 @@ class RealDebridAPI {
       if (existingTorrent) {
         console.log(`✅ Torrent již existuje v RD: ${existingTorrent.id} (${existingTorrent.status})`);
 
+        // Pokud je stažený, získat download linky
         if (existingTorrent.status === 'downloaded' && existingTorrent.links) {
           const downloadLinks = await this.getDownloadLinks(existingTorrent.links);
           return {
@@ -39,6 +42,7 @@ class RealDebridAPI {
           };
         }
 
+        // Pokud se stahuje, vrátit info pro čekání
         return {
           exists: true,
           torrentId: existingTorrent.id,
@@ -57,14 +61,15 @@ class RealDebridAPI {
   }
 
   // Inteligentní přidání - pouze pokud neexistuje
-  async addMagnetIfNotExists(magnetLink, infoHash, maxWaitMinutes = 3) {
+  async addMagnetIfNotExists(magnetLink, infoHash, maxWaitMinutes = 2) {
     if (!this.apiKey) return null;
 
     try {
-      // 1. Kontrola existence
+      // 1. Nejdřív zkontrolovat existenci
       const existing = await this.checkExistingTorrent(infoHash);
 
       if (existing.exists) {
+        // Torrent už existuje
         if (existing.status === 'downloaded' && existing.links) {
           console.log(`🎯 Používám existující stažený torrent: ${existing.torrentId}`);
           return existing.links;
@@ -82,7 +87,7 @@ class RealDebridAPI {
         }
       }
 
-      // 2. Přidat nový torrent
+      // 2. Torrent neexistuje - přidat nový
       console.log(`📥 Přidávám nový torrent do RD...`);
       return await this.addMagnetAndWait(magnetLink, maxWaitMinutes);
 
@@ -92,7 +97,7 @@ class RealDebridAPI {
     }
   }
 
-  // Čekání na dokončení torrenta
+  // Čekání na dokončení existujícího torrenta
   async waitForTorrentCompletion(torrentId, maxWaitMinutes) {
     const maxAttempts = maxWaitMinutes * 6; // 10s intervaly
 
@@ -118,15 +123,14 @@ class RealDebridAPI {
           return null;
         }
 
-        // Kratší čekání pro rychlejší odezvu
         await new Promise(resolve => setTimeout(resolve, 10000));
       } catch (error) {
-        console.log(`❌ Chyba při čekání na torrent: ${error.message}`);
+        console.log(`❌ Chyba při čekání: ${error.message}`);
         return null;
       }
     }
 
-    console.log(`⏰ Timeout při čekání na torrent po ${maxWaitMinutes} minutách`);
+    console.log(`⏰ Timeout po ${maxWaitMinutes} minutách`);
     return null;
   }
 
@@ -138,20 +142,20 @@ class RealDebridAPI {
         'files=all',
         { headers: this.headers, timeout: 10000 }
       );
-      console.log(`✅ Vybrány všechny soubory pro torrent: ${torrentId}`);
+      console.log(`✅ Vybrány všechny soubory`);
     } catch (error) {
       console.log(`❌ Chyba při výběru souborů: ${error.message}`);
-      throw error;
     }
   }
 
   // Přidání nového torrenta
-  async addMagnetAndWait(magnetLink, maxWaitMinutes = 3) {
+  async addMagnetAndWait(magnetLink, maxWaitMinutes = 2) {
     if (!this.apiKey) return null;
 
     try {
       console.log(`⏳ Přidávám magnet do RD...`);
 
+      // Přidání magnetu
       const addResponse = await axios.post(
         `${this.baseURL}/torrents/addMagnet`,
         `magnet=${encodeURIComponent(magnetLink)}`,
@@ -162,26 +166,16 @@ class RealDebridAPI {
       );
 
       const torrentId = addResponse.data.id;
-      console.log(`📥 Torrent přidán do RD: ${torrentId}`);
+      console.log(`📥 Torrent přidán: ${torrentId}`);
 
-      // Výběr souborů
+      // Vybrat všechny soubory
       await this.selectAllFiles(torrentId);
 
-      // Čekání na dokončení
+      // Čekat na dokončení
       return await this.waitForTorrentCompletion(torrentId, maxWaitMinutes);
 
     } catch (error) {
-      console.error(`❌ RD Add magnet failed: ${error.response?.status} - ${error.response?.data?.error || error.message}`);
-      
-      // Detailnější error handling
-      if (error.response?.status === 401) {
-        throw new Error('Neplatný Real-Debrid API klíč');
-      } else if (error.response?.status === 402) {
-        throw new Error('Real-Debrid účet vypršel nebo nemá dostatečný kredit');
-      } else if (error.response?.data?.error_code === 9) {
-        throw new Error('Torrent není dostupný v Real-Debrid cache');
-      }
-      
+      console.error(`❌ Přidání magnetu selhalo: ${error.response?.status} - ${error.response?.data?.error || error.message}`);
       return null;
     }
   }
@@ -191,8 +185,7 @@ class RealDebridAPI {
     try {
       const downloadLinks = [];
 
-      // Zpracovat více souborů pro lepší kompatibilitu
-      for (const link of rdLinks.slice(0, 5)) {
+      for (const link of rdLinks.slice(0, 3)) { // Max 3 soubory
         const unrestrictResponse = await axios.post(
           `${this.baseURL}/unrestrict/link`,
           `link=${encodeURIComponent(link)}`,
@@ -209,57 +202,10 @@ class RealDebridAPI {
         });
       }
 
-      console.log(`✅ Získáno ${downloadLinks.length} download linků`);
       return downloadLinks;
 
     } catch (error) {
-      console.error(`❌ RD Get download links failed: ${error.response?.status} - ${error.response?.data?.error || error.message}`);
-      return null;
-    }
-  }
-
-  // Test API klíče
-  async testApiKey() {
-    try {
-      const response = await axios.get(
-        `${this.baseURL}/user`,
-        { headers: this.headers, timeout: 10000 }
-      );
-      
-      console.log(`✅ Real-Debrid API klíč je platný pro uživatele: ${response.data.username}`);
-      return {
-        valid: true,
-        user: response.data
-      };
-    } catch (error) {
-      console.error(`❌ Real-Debrid API klíč test selhal: ${error.response?.status} - ${error.message}`);
-      return {
-        valid: false,
-        error: error.response?.status === 401 ? 'Neplatný API klíč' : 'Chyba připojení'
-      };
-    }
-  }
-
-  // Získání info o účtu
-  async getAccountInfo() {
-    try {
-      const response = await axios.get(
-        `${this.baseURL}/user`,
-        { headers: this.headers, timeout: 10000 }
-      );
-      
-      return {
-        username: response.data.username,
-        email: response.data.email,
-        points: response.data.points,
-        locale: response.data.locale,
-        avatar: response.data.avatar,
-        type: response.data.type,
-        premium: response.data.premium,
-        expiration: response.data.expiration
-      };
-    } catch (error) {
-      console.error(`❌ Získání account info selhalo: ${error.message}`);
+      console.error(`❌ Získání linků selhalo: ${error.response?.status} - ${error.response?.data?.error || error.message}`);
       return null;
     }
   }
