@@ -229,7 +229,7 @@ builder.defineStreamHandler(async (args) => {
         return { 
             streams: [{
                 name: "⚠️ Konfigurace chybí",
-                title: "Nastavte Real-Debrid API klíč na http://localhost:7000",
+                title: "Nastavte Real-Debrid API klíč na " + addonBaseUrl,
                 url: "#"
             }]
         };
@@ -855,15 +855,17 @@ setInterval(() => {
 const addonRouter = getRouter(builder.getInterface());
 app.use('/', addonRouter);
 
-// Inicializace a spuštění
+// Spuštění serveru
 async function start() {
     await loadConfig();
     await initializeRD();
     
-    app.listen(7000, () => {
-        console.log('🚀 SKTorrent Real-Debrid addon běží na http://localhost:7000');
-        console.log('🌐 Otevřete http://localhost:7000 pro konfiguraci');
-        console.log('📋 Manifest URL: http://localhost:7000/manifest.json');
+    const PORT = process.env.PORT || 7000;
+    
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 SKTorrent Real-Debrid addon běží na portu ${PORT}`);
+        console.log('🌐 Otevřete webovou adresu pro konfiguraci');
+        console.log('📋 Manifest URL: /manifest.json');
     });
 }
 
