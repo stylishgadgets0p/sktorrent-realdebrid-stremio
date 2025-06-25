@@ -80,6 +80,7 @@ const builder = addonBuilder({
     version: "3.0.0",
     name: "SKTorrent RD Only",
     description: "SKTorrent addon pouze s Real-Debrid podporou",
+    logo: 'https://i.ibb.co/y5TQrrs/sktorrent.png',
     types: ["movie", "series"],
     catalogs: [],
     resources: ["stream"],
